@@ -152,7 +152,10 @@ def proj_steer(directions, hidden_index, positions='all'):
 def _make_hook(steer, start):
     def hook(module, inputs, output):
         h = output[0] if isinstance(output, tuple) else output
-        part = h[:, start:, :]
+        # During text generation with a cache, later steps only see the new token(s):
+        # then the whole chunk lies after the prompt, so intervene on all of it.
+        s = start if h.shape[1] > start else 0
+        part = h[:, s:, :]
         if steer['kind'] == 'add':
             part += steer['vec'].to(h.device, h.dtype)
         else:
@@ -207,6 +210,17 @@ def next_token_logprobs(model, tok, prompt, steer=None):
 def top1(model, tok, prompt, steer=None):
     """The single most likely next token, as text."""
     return tok.decode(int(next_token_logprobs(model, tok, prompt, steer).argmax()))
+
+
+@torch.no_grad()
+def generate(model, tok, prompt, n_tokens=8, steer=None):
+    """Greedy continuation of the prompt (only the new text), with optional steering."""
+    p_ids = _ids(tok, prompt)
+    ids = torch.tensor([p_ids], device=model.device)
+    with steering(model, steer, len(p_ids)):
+        out = model.generate(ids, attention_mask=torch.ones_like(ids), max_new_tokens=n_tokens,
+                             do_sample=False, pad_token_id=tok.eos_token_id)
+    return tok.decode(out[0, len(p_ids):].tolist())
 
 
 def score_record(model, tok, rec, steer=None):
